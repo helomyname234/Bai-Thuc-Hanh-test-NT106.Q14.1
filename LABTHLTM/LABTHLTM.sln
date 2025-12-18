@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36518.9 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LABTHLTM", "LABTHLTM\LABTHLTM.csproj", "{6BAB47C6-DA97-43C8-AAD0-AA8AE8E5AADD}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{6BAB47C6-DA97-43C8-AAD0-AA8AE8E5AADD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6BAB47C6-DA97-43C8-AAD0-AA8AE8E5AADD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6BAB47C6-DA97-43C8-AAD0-AA8AE8E5AADD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6BAB47C6-DA97-43C8-AAD0-AA8AE8E5AADD}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {1452A93C-01F4-42C8-83D6-B33972C6541F}
+	EndGlobalSection
+EndGlobal
