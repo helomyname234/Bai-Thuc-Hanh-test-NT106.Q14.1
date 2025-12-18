@@ -1,11 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Data;
 using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace LABTHLTM
@@ -26,7 +26,7 @@ namespace LABTHLTM
             // Auto-refresh timer
             refreshTimer = new System.Windows.Forms.Timer();
             refreshTimer.Interval = 3000; // 3 seconds
-            refreshTimer.Tick += RefreshTimer_Tick;
+            refreshTimer.Tick += async (s, e) => await RefreshOrdersAsync();
         }
 
         private void StaffForm_Load(object sender, EventArgs e)
@@ -36,51 +36,92 @@ namespace LABTHLTM
             dgvOrders.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         }
 
-        private void btnConnect_Click(object sender, EventArgs e)
+        private async void btnConnect_Click(object sender, EventArgs e)
         {
             if (!isConnected)
             {
-                try
-                {
-                    client = new TcpClient(txtServerIP.Text, int.Parse(txtPort.Text));
-                    stream = client.GetStream();
-                    isConnected = true;
-
-                    // Authenticate as staff
-                    SendMessage("AUTH STAFF");
-                    string authResponse = ReceiveMessage();
-
-                    btnConnect.Text = "Disconnect";
-                    btnConnect.BackColor = Color.FromArgb(231, 76, 60);
-                    lblStatus.Text = "Status: Connected";
-                    lblStatus.ForeColor = Color.Green;
-
-                    // Start auto-refresh
-                    refreshTimer.Start();
-                    RefreshOrders();
-
-                    MessageBox.Show("Connected to server successfully!", "Success",
-                        MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Connection failed: {ex.Message}", "Error",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
+                await ConnectToServerAsync();
             }
             else
             {
-                Disconnect();
+                await DisconnectAsync();
             }
         }
 
-        private void RefreshTimer_Tick(object sender, EventArgs e)
+        private async Task ConnectToServerAsync()
         {
-            if (isConnected)
-                RefreshOrders();
+            // Validate input
+            if (string.IsNullOrWhiteSpace(txtServerIP.Text))
+            {
+                MessageBox.Show("Please enter Server IP!", "Warning",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (!int.TryParse(txtPort.Text, out int port))
+            {
+                MessageBox.Show("Invalid port number!", "Warning",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            lblStatus.Text = "Status: Connecting...";
+            lblStatus.ForeColor = Color.Orange;
+            btnConnect.Enabled = false;
+
+            try
+            {
+                client = new TcpClient();
+                await client.ConnectAsync(txtServerIP.Text, port);
+                stream = client.GetStream();
+                isConnected = true;
+
+                // Authenticate as staff
+                await SendMessageAsync("AUTH STAFF");
+                string authResponse = await ReceiveMessageAsync();
+
+                btnConnect.Text = "Disconnect";
+                btnConnect.BackColor = Color.FromArgb(231, 76, 60);
+                lblStatus.Text = "Status: Connected";
+                lblStatus.ForeColor = Color.Green;
+
+                // Start auto-refresh
+                refreshTimer.Start();
+                await RefreshOrdersAsync();
+
+                MessageBox.Show($"Connected to {txtServerIP.Text}:{port} successfully!", "Success",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (SocketException sockEx)
+            {
+                lblStatus.Text = "Status: Connection Failed";
+                lblStatus.ForeColor = Color.Red;
+
+                string errorMsg = "Cannot connect to server!\n\n";
+                errorMsg += "Possible causes:\n";
+                errorMsg += "• Server is not running\n";
+                errorMsg += $"• Wrong IP: {txtServerIP.Text}\n";
+                errorMsg += $"• Wrong port: {txtPort.Text}\n";
+                errorMsg += "• Firewall blocking\n\n";
+                errorMsg += $"Error: {sockEx.Message}";
+
+                MessageBox.Show(errorMsg, "Connection Failed",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch (Exception ex)
+            {
+                lblStatus.Text = "Status: Error";
+                lblStatus.ForeColor = Color.Red;
+                MessageBox.Show($"Connection error!\n\n{ex.Message}", "Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                btnConnect.Enabled = true;
+            }
         }
 
-        private void btnRefresh_Click(object sender, EventArgs e)
+        private async void btnRefresh_Click(object sender, EventArgs e)
         {
             if (!isConnected)
             {
@@ -88,26 +129,34 @@ namespace LABTHLTM
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-            RefreshOrders();
+            await RefreshOrdersAsync();
         }
 
-        private void RefreshOrders()
+        private async Task RefreshOrdersAsync()
         {
+            if (!isConnected)
+                return;
+
             try
             {
-                SendMessage("GET_ORDERS");
-                string orderData = ReceiveMessage();
+                await SendMessageAsync("GET_ORDERS");
+                string orderData = await ReceiveMessageAsync();
                 LoadOrders(orderData);
             }
-            catch (Exception ex)
+            catch
             {
-                MessageBox.Show($"Error refreshing orders: {ex.Message}", "Error",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                // Silently fail on refresh errors
             }
         }
 
         private void LoadOrders(string orderData)
         {
+            if (dgvOrders.InvokeRequired)
+            {
+                dgvOrders.Invoke(new Action(() => LoadOrders(orderData)));
+                return;
+            }
+
             orders.Clear();
 
             if (orderData == "EMPTY")
@@ -146,7 +195,7 @@ namespace LABTHLTM
             }
         }
 
-        private void btnCharge_Click(object sender, EventArgs e)
+        private async void btnCharge_Click(object sender, EventArgs e)
         {
             if (!isConnected)
             {
@@ -162,11 +211,18 @@ namespace LABTHLTM
                 return;
             }
 
+            await ProcessPaymentAsync();
+        }
+
+        private async Task ProcessPaymentAsync()
+        {
+            btnCharge.Enabled = false;
+
             try
             {
                 int tableNumber = int.Parse(txtTableNumber.Text);
-                SendMessage($"PAY {tableNumber}");
-                string response = ReceiveMessage();
+                await SendMessageAsync($"PAY {tableNumber}");
+                string response = await ReceiveMessageAsync();
 
                 if (response.StartsWith("ERROR"))
                 {
@@ -223,12 +279,12 @@ namespace LABTHLTM
 
                 // Save to file
                 string fileName = $"bill_Table{tableNumber}_{DateTime.Now:yyyyMMdd_HHmmss}.txt";
-                File.WriteAllText(fileName, billText.ToString());
+                await Task.Run(() => File.WriteAllText(fileName, billText.ToString()));
 
-                MessageBox.Show($"Payment processed successfully!\nTotal: {total:N0} VND\n\nBill saved to: {fileName}",
+                MessageBox.Show($"Payment processed successfully!\n\nTotal: {total:N0} VND\n\nBill saved to: {fileName}",
                     "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
-                RefreshOrders();
+                await RefreshOrdersAsync();
                 txtTableNumber.Clear();
             }
             catch (Exception ex)
@@ -236,29 +292,34 @@ namespace LABTHLTM
                 MessageBox.Show($"Error processing payment: {ex.Message}", "Error",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+            finally
+            {
+                btnCharge.Enabled = true;
+            }
         }
 
-        private void SendMessage(string message)
+        private async Task SendMessageAsync(string message)
         {
             byte[] data = Encoding.UTF8.GetBytes(message);
-            stream.Write(data, 0, data.Length);
+            await stream.WriteAsync(data, 0, data.Length);
         }
 
-        private string ReceiveMessage()
+        private async Task<string> ReceiveMessageAsync()
         {
             byte[] buffer = new byte[4096];
-            int bytesRead = stream.Read(buffer, 0, buffer.Length);
+            int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
             return Encoding.UTF8.GetString(buffer, 0, bytesRead);
         }
 
-        private void Disconnect()
+        private async Task DisconnectAsync()
         {
             try
             {
                 refreshTimer.Stop();
                 if (isConnected)
                 {
-                    SendMessage("QUIT");
+                    await SendMessageAsync("QUIT");
+                    await Task.Delay(100);
                     stream?.Close();
                     client?.Close();
                 }
@@ -274,9 +335,9 @@ namespace LABTHLTM
             }
         }
 
-        private void StaffForm_FormClosing(object sender, FormClosingEventArgs e)
+        private async void StaffForm_FormClosing(object sender, FormClosingEventArgs e)
         {
-            Disconnect();
+            await DisconnectAsync();
         }
     }
 

@@ -1,11 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Data;
 using System.Drawing;
-using System.IO;
 using System.Linq;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace LABTHLTM
@@ -33,41 +32,92 @@ namespace LABTHLTM
             numTableNumber.Value = 1;
         }
 
-        private void btnConnect_Click(object sender, EventArgs e)
+        private async void btnConnect_Click(object sender, EventArgs e)
         {
             if (!isConnected)
             {
-                try
-                {
-                    client = new TcpClient(txtServerIP.Text, int.Parse(txtPort.Text));
-                    stream = client.GetStream();
-                    isConnected = true;
-
-                    // Authenticate as customer
-                    SendMessage("AUTH CUSTOMER");
-                    string authResponse = ReceiveMessage();
-
-                    // Load menu
-                    SendMessage("MENU");
-                    string menuData = ReceiveMessage();
-                    LoadMenu(menuData);
-
-                    btnConnect.Text = "Disconnect";
-                    btnConnect.BackColor = Color.FromArgb(231, 76, 60);
-                    lblStatus.Text = "Status: Connected";
-                    lblStatus.ForeColor = Color.Green;
-                    MessageBox.Show("Connected to server successfully!", "Success",
-                        MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Connection failed: {ex.Message}", "Error",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
+                await ConnectToServerAsync();
             }
             else
             {
-                Disconnect();
+                await DisconnectAsync();
+            }
+        }
+
+        private async Task ConnectToServerAsync()
+        {
+            try
+            {
+                // Validate input
+                if (string.IsNullOrWhiteSpace(txtServerIP.Text))
+                {
+                    MessageBox.Show("Please enter Server IP!", "Warning",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                if (!int.TryParse(txtPort.Text, out int port))
+                {
+                    MessageBox.Show("Invalid port number!", "Warning",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                lblStatus.Text = "Status: Connecting...";
+                lblStatus.ForeColor = Color.Orange;
+                btnConnect.Enabled = false;
+                Application.DoEvents();
+
+                client = new TcpClient();
+
+                // Connect with timeout
+                await client.ConnectAsync(txtServerIP.Text, port);
+                stream = client.GetStream();
+                isConnected = true;
+
+                // Authenticate as customer
+                await SendMessageAsync("AUTH CUSTOMER");
+                string authResponse = await ReceiveMessageAsync();
+
+                // Load menu
+                await SendMessageAsync("MENU");
+                string menuData = await ReceiveMessageAsync();
+                LoadMenu(menuData);
+
+                btnConnect.Text = "Disconnect";
+                btnConnect.BackColor = Color.FromArgb(231, 76, 60);
+                btnConnect.Enabled = true;
+                lblStatus.Text = "Status: Connected";
+                lblStatus.ForeColor = Color.Green;
+
+                MessageBox.Show($"Connected to {txtServerIP.Text}:{port} successfully!",
+                    "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (SocketException sockEx)
+            {
+                lblStatus.Text = "Status: Connection Failed";
+                lblStatus.ForeColor = Color.Red;
+                btnConnect.Enabled = true;
+
+                string errorMsg = "Cannot connect to server!\n\n";
+                errorMsg += "Possible causes:\n";
+                errorMsg += "• Server is not running\n";
+                errorMsg += $"• Wrong IP address ({txtServerIP.Text})\n";
+                errorMsg += $"• Wrong port ({txtPort.Text})\n";
+                errorMsg += "• Firewall blocking connection\n\n";
+                errorMsg += $"Technical error: {sockEx.Message}";
+
+                MessageBox.Show(errorMsg, "Connection Failed",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch (Exception ex)
+            {
+                lblStatus.Text = "Status: Error";
+                lblStatus.ForeColor = Color.Red;
+                btnConnect.Enabled = true;
+
+                MessageBox.Show($"Connection error!\n\n{ex.Message}", "Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -100,7 +150,7 @@ namespace LABTHLTM
             dgvMenu.Columns["Quantity"].ReadOnly = false;
         }
 
-        private void btnPlaceOrder_Click(object sender, EventArgs e)
+        private async void btnPlaceOrder_Click(object sender, EventArgs e)
         {
             if (!isConnected)
             {
@@ -109,19 +159,26 @@ namespace LABTHLTM
                 return;
             }
 
+            await PlaceOrderAsync();
+        }
+
+        private async Task PlaceOrderAsync()
+        {
             int tableNumber = (int)numTableNumber.Value;
             decimal totalAmount = 0;
             int itemsOrdered = 0;
 
-            foreach (var item in menuItems)
+            btnPlaceOrder.Enabled = false;
+
+            try
             {
-                if (item.Quantity > 0)
+                foreach (var item in menuItems)
                 {
-                    try
+                    if (item.Quantity > 0)
                     {
                         string orderMsg = $"ORDER {tableNumber} {item.ID} {item.Quantity}";
-                        SendMessage(orderMsg);
-                        string response = ReceiveMessage();
+                        await SendMessageAsync(orderMsg);
+                        string response = await ReceiveMessageAsync();
 
                         if (response.StartsWith("OK"))
                         {
@@ -133,51 +190,56 @@ namespace LABTHLTM
                             }
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show($"Error ordering {item.Name}: {ex.Message}", "Error",
-                            MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    }
+                }
+
+                if (itemsOrdered > 0)
+                {
+                    MessageBox.Show($"Order placed successfully!\n\nTable: {tableNumber}\nTotal Amount: {totalAmount:N0} VND",
+                        "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                    // Reset quantities
+                    foreach (var item in menuItems)
+                        item.Quantity = 0;
+                    dgvMenu.Refresh();
+                }
+                else
+                {
+                    MessageBox.Show("Please select at least one item with quantity > 0!", "Warning",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
             }
-
-            if (itemsOrdered > 0)
+            catch (Exception ex)
             {
-                MessageBox.Show($"Order placed successfully!\nTable: {tableNumber}\nTotal Amount: {totalAmount:N0} VND",
-                    "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-                // Reset quantities
-                foreach (var item in menuItems)
-                    item.Quantity = 0;
-                dgvMenu.Refresh();
+                MessageBox.Show($"Error placing order: {ex.Message}", "Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
-            else
+            finally
             {
-                MessageBox.Show("Please select at least one item with quantity > 0!", "Warning",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                btnPlaceOrder.Enabled = true;
             }
         }
 
-        private void SendMessage(string message)
+        private async Task SendMessageAsync(string message)
         {
             byte[] data = Encoding.UTF8.GetBytes(message);
-            stream.Write(data, 0, data.Length);
+            await stream.WriteAsync(data, 0, data.Length);
         }
 
-        private string ReceiveMessage()
+        private async Task<string> ReceiveMessageAsync()
         {
             byte[] buffer = new byte[4096];
-            int bytesRead = stream.Read(buffer, 0, buffer.Length);
+            int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
             return Encoding.UTF8.GetString(buffer, 0, bytesRead);
         }
 
-        private void Disconnect()
+        private async Task DisconnectAsync()
         {
             try
             {
                 if (isConnected)
                 {
-                    SendMessage("QUIT");
+                    await SendMessageAsync("QUIT");
+                    await Task.Delay(100); // Give time for message to send
                     stream?.Close();
                     client?.Close();
                 }
@@ -193,9 +255,9 @@ namespace LABTHLTM
             }
         }
 
-        private void CustomerForm_FormClosing(object sender, FormClosingEventArgs e)
+        private async void CustomerForm_FormClosing(object sender, FormClosingEventArgs e)
         {
-            Disconnect();
+            await DisconnectAsync();
         }
     }
 

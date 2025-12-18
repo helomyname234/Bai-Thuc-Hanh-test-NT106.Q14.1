@@ -16,5 +16,23 @@ namespace LABTHLTM
         {
             InitializeComponent();
         }
+
+        private void button1_Click(object sender, EventArgs e)
+        {
+            ServerForm serverForm = new ServerForm();
+            serverForm.Show();
+        }
+
+        private void button2_Click(object sender, EventArgs e)
+        {
+            CustomerForm customer = new CustomerForm();
+            customer.Show();
+        }
+
+        private void button3_Click(object sender, EventArgs e)
+        {
+            StaffForm sf = new StaffForm();
+            sf.Show();
+        }
     }
 }

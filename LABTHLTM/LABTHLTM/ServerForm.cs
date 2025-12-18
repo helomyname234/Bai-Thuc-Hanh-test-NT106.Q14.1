@@ -1,12 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace LABTHLTM
@@ -15,9 +15,10 @@ namespace LABTHLTM
     {
         private TcpListener server;
         private List<MenuItem> menu;
-        private Dictionary<int, List<OrderItem>> orders; // Key: Table number
-        private bool isRunning;
+        private Dictionary<int, List<OrderItem>> orders;
+        private CancellationTokenSource cancellationTokenSource;
         private const int PORT = 5000;
+        private readonly object lockObject = new object();
 
         public ServerForm()
         {
@@ -26,11 +27,11 @@ namespace LABTHLTM
             orders = new Dictionary<int, List<OrderItem>>();
         }
 
-        private void ServerForm_Load(object sender, EventArgs e)
+        private async void ServerForm_Load(object sender, EventArgs e)
         {
             LoadMenu();
             lblStatus.Text = $"Server: {GetLocalIPAddress()}:{PORT}";
-            StartServer();
+            await StartServerAsync();
         }
 
         private void LoadMenu()
@@ -40,7 +41,6 @@ namespace LABTHLTM
                 string menuFile = "menu.txt";
                 if (!File.Exists(menuFile))
                 {
-                    // Create sample menu file
                     File.WriteAllLines(menuFile, new[]
                     {
                         "1;Phở Bò;50000",
@@ -72,80 +72,108 @@ namespace LABTHLTM
             }
         }
 
-        private void StartServer()
+        private async Task StartServerAsync()
         {
             try
             {
                 server = new TcpListener(IPAddress.Any, PORT);
                 server.Start();
-                isRunning = true;
-                LogMessage("Server started successfully");
+                cancellationTokenSource = new CancellationTokenSource();
 
-                Thread listenerThread = new Thread(ListenForClients);
-                listenerThread.IsBackground = true;
-                listenerThread.Start();
+                LogMessage("=================================");
+                LogMessage($"Server started successfully on port {PORT}");
+                LogMessage($"Listening on: {GetLocalIPAddress()}:{PORT}");
+                LogMessage("Waiting for clients...");
+                LogMessage("=================================");
+
+                // Accept clients asynchronously
+                await AcceptClientsAsync(cancellationTokenSource.Token);
             }
             catch (Exception ex)
             {
-                LogMessage($"Error starting server: {ex.Message}");
+                LogMessage($"ERROR starting server: {ex.Message}");
+                MessageBox.Show($"Failed to start server!\n\nError: {ex.Message}",
+                    "Server Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
-        private void ListenForClients()
+        private async Task AcceptClientsAsync(CancellationToken cancellationToken)
         {
-            while (isRunning)
+            while (!cancellationToken.IsCancellationRequested)
             {
                 try
                 {
-                    TcpClient client = server.AcceptTcpClient();
-                    Thread clientThread = new Thread(HandleClient);
-                    clientThread.IsBackground = true;
-                    clientThread.Start(client);
+                    TcpClient client = await server.AcceptTcpClientAsync();
+
+                    // Handle each client in separate task (fire and forget)
+                    _ = Task.Run(() => HandleClientAsync(client, cancellationToken), cancellationToken);
+                }
+                catch (ObjectDisposedException)
+                {
+                    break; // Server stopped
                 }
                 catch (Exception ex)
                 {
-                    if (isRunning)
+                    if (!cancellationToken.IsCancellationRequested)
                         LogMessage($"Error accepting client: {ex.Message}");
                 }
             }
         }
 
-        private void HandleClient(object obj)
+        private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken)
         {
-            TcpClient client = (TcpClient)obj;
-            NetworkStream stream = client.GetStream();
-            string clientIP = ((IPEndPoint)client.Client.RemoteEndPoint).Address.ToString();
+            NetworkStream stream = null;
+            string clientIP = "";
             string clientType = "Unknown";
 
             try
             {
-                byte[] buffer = new byte[4096];
-                int bytesRead;
+                stream = client.GetStream();
+                clientIP = ((IPEndPoint)client.Client.RemoteEndPoint).Address.ToString();
+                LogMessage($"=== NEW CLIENT CONNECTED: {clientIP} ===");
 
-                while ((bytesRead = stream.Read(buffer, 0, buffer.Length)) > 0)
+                byte[] buffer = new byte[4096];
+
+                while (!cancellationToken.IsCancellationRequested)
                 {
+                    int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
+
+                    if (bytesRead == 0)
+                        break; // Client disconnected
+
                     string message = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim();
-                    LogMessage($"[{clientIP}] Received: {message}");
+                    LogMessage($"[{clientIP}] ← Received: {message}");
 
                     string response = ProcessCommand(message, ref clientType);
 
                     byte[] responseBytes = Encoding.UTF8.GetBytes(response);
-                    stream.Write(responseBytes, 0, responseBytes.Length);
+                    await stream.WriteAsync(responseBytes, 0, responseBytes.Length, cancellationToken);
 
-                    LogMessage($"[{clientIP}] Sent: {response}");
+                    string logResponse = response.Length > 50 ?
+                        response.Substring(0, 50) + "..." : response;
+                    LogMessage($"[{clientIP}] → Sent: {logResponse}");
 
                     if (message == "QUIT")
                         break;
                 }
             }
+            catch (OperationCanceledException)
+            {
+                LogMessage($"[{clientIP}] Operation cancelled");
+            }
+            catch (IOException)
+            {
+                LogMessage($"[{clientIP}] Connection lost");
+            }
             catch (Exception ex)
             {
-                LogMessage($"[{clientIP}] Error: {ex.Message}");
+                LogMessage($"[{clientIP}] ERROR: {ex.Message}");
             }
             finally
             {
-                client.Close();
-                LogMessage($"[{clientIP}] Disconnected ({clientType})");
+                stream?.Close();
+                client?.Close();
+                LogMessage($"=== CLIENT DISCONNECTED: {clientIP} ({clientType}) ===");
             }
         }
 
@@ -205,67 +233,75 @@ namespace LABTHLTM
 
         private string ProcessOrder(int table, int itemId, int quantity)
         {
-            var menuItem = menu.FirstOrDefault(m => m.ID == itemId);
-            if (menuItem == null)
-                return "ERROR Item not found";
-
-            if (!orders.ContainsKey(table))
-                orders[table] = new List<OrderItem>();
-
-            var existingOrder = orders[table].FirstOrDefault(o => o.ItemID == itemId);
-            if (existingOrder != null)
+            lock (lockObject)
             {
-                existingOrder.Quantity += quantity;
-            }
-            else
-            {
-                orders[table].Add(new OrderItem
+                var menuItem = menu.FirstOrDefault(m => m.ID == itemId);
+                if (menuItem == null)
+                    return "ERROR Item not found";
+
+                if (!orders.ContainsKey(table))
+                    orders[table] = new List<OrderItem>();
+
+                var existingOrder = orders[table].FirstOrDefault(o => o.ItemID == itemId);
+                if (existingOrder != null)
                 {
-                    ItemID = itemId,
-                    Name = menuItem.Name,
-                    Price = menuItem.Price,
-                    Quantity = quantity
-                });
-            }
+                    existingOrder.Quantity += quantity;
+                }
+                else
+                {
+                    orders[table].Add(new OrderItem
+                    {
+                        ItemID = itemId,
+                        Name = menuItem.Name,
+                        Price = menuItem.Price,
+                        Quantity = quantity
+                    });
+                }
 
-            decimal total = menuItem.Price * quantity;
-            return $"OK {total}";
+                decimal total = menuItem.Price * quantity;
+                return $"OK {total}";
+            }
         }
 
         private string GetAllOrders()
         {
-            if (orders.Count == 0)
-                return "EMPTY";
-
-            StringBuilder sb = new StringBuilder();
-            foreach (var table in orders.Keys.OrderBy(k => k))
+            lock (lockObject)
             {
-                foreach (var order in orders[table])
+                if (orders.Count == 0)
+                    return "EMPTY";
+
+                StringBuilder sb = new StringBuilder();
+                foreach (var table in orders.Keys.OrderBy(k => k))
                 {
-                    sb.AppendLine($"{table};{order.ItemID};{order.Name};{order.Quantity};{order.Price};{order.Price * order.Quantity}");
+                    foreach (var order in orders[table])
+                    {
+                        sb.AppendLine($"{table};{order.ItemID};{order.Name};{order.Quantity};{order.Price};{order.Price * order.Quantity}");
+                    }
                 }
+                return sb.ToString();
             }
-            return sb.ToString();
         }
 
         private string ProcessPayment(int table)
         {
-            if (!orders.ContainsKey(table))
-                return "ERROR Table not found";
-
-            decimal total = orders[table].Sum(o => o.Price * o.Quantity);
-
-            // Generate bill details
-            StringBuilder bill = new StringBuilder();
-            bill.AppendLine($"TABLE {table}");
-            foreach (var order in orders[table])
+            lock (lockObject)
             {
-                bill.AppendLine($"{order.Name};{order.Quantity};{order.Price};{order.Price * order.Quantity}");
-            }
-            bill.AppendLine($"TOTAL {total}");
+                if (!orders.ContainsKey(table))
+                    return "ERROR Table not found";
 
-            orders.Remove(table);
-            return bill.ToString();
+                decimal total = orders[table].Sum(o => o.Price * o.Quantity);
+
+                StringBuilder bill = new StringBuilder();
+                bill.AppendLine($"TABLE {table}");
+                foreach (var order in orders[table])
+                {
+                    bill.AppendLine($"{order.Name};{order.Quantity};{order.Price};{order.Price * order.Quantity}");
+                }
+                bill.AppendLine($"TOTAL {total}");
+
+                orders.Remove(table);
+                return bill.ToString();
+            }
         }
 
         private void LogMessage(string message)
@@ -295,7 +331,7 @@ namespace LABTHLTM
 
         private void ServerForm_FormClosing(object sender, FormClosingEventArgs e)
         {
-            isRunning = false;
+            cancellationTokenSource?.Cancel();
             server?.Stop();
         }
     }
